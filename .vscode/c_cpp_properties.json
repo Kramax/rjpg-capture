@@ -1,0 +1,18 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "."
+            ],
+            "defines": [],
+            "compilerPath": "/bin/clang++",
+            "compilerArgs": [
+                "-std=c++20"
+            ],
+            "cppStandard": "c++20"
+        }
+    ],
+    "version": 4
+}
