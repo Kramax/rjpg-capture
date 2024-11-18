@@ -26,6 +26,7 @@ inline std::string string_format(const std::string fmt_str, ...)
     return std::string(formatted.get());
 }
 
+#ifdef HAS_SOURCE_LOCATION // sadly rpi debian is not up to date and is missing this
 #define ReportError(fmt, ...) ReportErrorImpl(std::source_location::current(), string_format(fmt, __VA_ARGS__))
 #define LogDeb(fmt, ...) LogDebImp(std::source_location::current(), string_format(fmt, __VA_ARGS__))
 #define LogError(fmt, ...) LogErrorImpl(std::source_location::current(), string_format(fmt, __VA_ARGS__))
@@ -33,5 +34,15 @@ inline std::string string_format(const std::string fmt_str, ...)
 void ReportErrorImpl(const std::source_location location, const std::string &msg);
 void LogErrorImpl(const std::source_location location, const std::string &msg);
 void LogDebImp(const std::source_location location, const std::string &msg);
+#else
+#define ReportError(fmt, ...) ReportErrorImpl(string_format(fmt, __VA_ARGS__))
+#define LogDeb(fmt, ...) LogDebImp(string_format(fmt, __VA_ARGS__))
+#define LogError(fmt, ...) LogErrorImpl(string_format(fmt, __VA_ARGS__))
+
+void ReportErrorImpl(const std::string &msg);
+void LogErrorImpl(const std::string &msg);
+void LogDebImp(const std::string &msg);
+
+#endif
 
 #endif

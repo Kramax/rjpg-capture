@@ -15,6 +15,7 @@
 #include "camera_v4l.hpp"
 #include "argparse.hpp"
 
+#ifdef HAS_SOURCE_LOCATION // sadly rpi debian is not up to date and is missing this
 void LogErrorImpl(const std::source_location location, const std::string &msg)
 {
   fprintf(stderr, "%s:%u %s", location.file_name(), location.line(), msg.c_str());
@@ -32,6 +33,25 @@ void ReportErrorImpl(const std::source_location location, const std::string &msg
 {
   LogErrorImpl(location, msg);
 }
+#else
+void LogErrorImpl(const std::string &msg)
+{
+  fprintf(stderr, "%s", msg.c_str());
+
+  if (msg.back() != '\n')
+    fputc('\n', stderr);
+}
+
+void LogDebImp(const std::string &msg)
+{
+  LogErrorImpl(msg); // for now
+}
+
+void ReportErrorImpl(const std::string &msg)
+{
+  LogErrorImpl(msg);
+}
+#endif
 
 
 struct CustomArgs : public argparse::Args {
