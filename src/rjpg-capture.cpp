@@ -70,7 +70,7 @@ int main(int argc, char* argv[])
   }
   catch(const std::exception& e)
   {
-    LogError("Could not open camera: {}", e.what());
+    LogError("Could not open camera: %s", e.what());
     return 1;
   }
   

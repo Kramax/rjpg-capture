@@ -91,7 +91,7 @@ struct Camera_V4L : public Camera
 
     if (xioctl(_fd, ioctl_code, &data) != 0) 
     {
-      throw ErrorIOCTL(std::format("ioctl_get failed for {}", what));
+      throw ErrorIOCTL(string_format("ioctl_get failed for %s", what.c_str()));
     }
   }
 
@@ -99,7 +99,7 @@ struct Camera_V4L : public Camera
   {
     if (xioctl(_fd, ioctl_code, (void*)&data) != 0) 
     {
-      throw ErrorIOCTL(std::format("ioctl_set failed for {}", what));
+      throw ErrorIOCTL(string_format("ioctl_set failed for %s", what.c_str()));
     }
   }
 
@@ -108,7 +108,7 @@ struct Camera_V4L : public Camera
   {
     if (xioctl(_fd, ioctl_code, &data) != 0) 
     {
-      throw ErrorIOCTL(std::format("ioctl_rw failed for {}", what));
+      throw ErrorIOCTL(string_format("ioctl_rw failed for %s", what.c_str()));
     }
   }
 

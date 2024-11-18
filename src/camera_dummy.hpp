@@ -1,6 +1,5 @@
 #include "camera.hpp"
-
-#include <format>
+#include "rjpg-capture.hpp"
 
 struct CameraDummy : public Camera
 {
@@ -45,7 +44,7 @@ struct CameraDummy : public Camera
   virtual void read_image_bytes(std::vector<char> &contents) override
   {
     try {
-      auto filename = std::format("test-images/test-image-{}.jpg", image_count++ % 10);
+      auto filename = string_format("test-images/test-image-%d.jpg", image_count++ % 10);
 
       slurp_file(filename.c_str(), contents);
     }
