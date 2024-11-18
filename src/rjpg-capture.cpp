@@ -2,7 +2,6 @@
 #include <vector>
 #include <cstdio>
 #include <string>
-#include <format>
 #include <mutex>
 #include <string>
 #include <source_location>
