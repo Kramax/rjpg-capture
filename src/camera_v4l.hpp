@@ -65,7 +65,7 @@ struct Camera_V4L : public Camera
   * arg - pointer to ioctl data
   * returns - ioctl result
   */
-  int xioctl(int fd, int IOCTL_X, void *arg)
+  int xioctl(int fd, unsigned long IOCTL_X, void *arg)
   {
       int ret = 0;
       int tries = 4;
@@ -85,29 +85,30 @@ struct Camera_V4L : public Camera
     memset(&data, 0, sizeof(data));
   }
 
-  template <typename S> void ioctl_get(int ioctl_code, S &data, const std::string &what)
+  template <typename S> void ioctl_get(unsigned long ioctl_code, S &data, const std::string &what)
   {
-    zero_struct(data);
-
     if (xioctl(_fd, ioctl_code, &data) != 0) 
     {
+      LogError("ioctl_get failed: %s", what.c_str());
       throw ErrorIOCTL(string_format("ioctl_get failed for %s", what.c_str()));
     }
   }
 
-  template <typename S> void ioctl_set(int ioctl_code, const S &data, const std::string &what)
+  template <typename S> void ioctl_set(unsigned long ioctl_code, S &data, const std::string &what)
   {
     if (xioctl(_fd, ioctl_code, (void*)&data) != 0) 
     {
+      LogError("ioctl_set failed: %s", what.c_str());
       throw ErrorIOCTL(string_format("ioctl_set failed for %s", what.c_str()));
     }
   }
 
   // some ioctl are both getting and setting
-  template <typename S> void ioctl_rw(int ioctl_code, S &data, const std::string &what)
+  template <typename S> void ioctl_rw(unsigned long ioctl_code, S &data, const std::string &what)
   {
     if (xioctl(_fd, ioctl_code, &data) != 0) 
     {
+      LogError("ioctl_rw failed: %s", what.c_str());
       throw ErrorIOCTL(string_format("ioctl_rw failed for %s", what.c_str()));
     }
   }
@@ -131,6 +132,17 @@ struct Camera_V4L : public Camera
 
     ioctl_get(VIDIOC_QUERYCAP, cap, "query capabilities");
 
+    if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)
+    {
+      LogDeb("%s has capture capability", path.c_str());
+    }
+    else
+    {
+      LogError("%s does not have capture capability", path.c_str());
+      throw ErrorOpen("no capture capability");
+    }
+
+
     if (cap.capabilities & V4L2_CAP_STREAMING)
     {
       LogDeb("%s has streaming capability", path.c_str());
@@ -141,37 +153,61 @@ struct Camera_V4L : public Camera
       throw ErrorOpen("no streaming capability");
     }
 
-    v4l2_std_id vstd = V4L2_STD_NTSC;
+    LogDeb("%s name is %s", path.c_str(), cap.driver);
+    LogDeb("%s card is %s", path.c_str(), cap.card);
 
-    ioctl_set(VIDIOC_S_STD, vstd, "set video standard");
+    struct v4l2_dv_timings timings = {0};
 
-    struct v4l2_dv_timings timings;
-
+/*
+    try {
     ioctl_get(VIDIOC_QUERY_DV_TIMINGS, timings, "query video timings");
+    }
+    catch(std::runtime_error e) {
+      LogError("Could not query video timings (%d), but continuing...", errno);
+    }
 
+    try {
     // not sure why it sets them right after getting them
     ioctl_set(VIDIOC_QUERY_DV_TIMINGS, timings, "set video timings");
+    }
+    catch(std::runtime_error e) {
+      LogError("Could not set video timings (%d), but continuing...", errno);
+    }
+*/
     
     LogDeb("Got timing size %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
 
     _width = timings.bt.width;
     _height = timings.bt.height;
 
-    struct v4l2_event_subscription sub;
+    if (_width == 0)
+    {
+      _width = 1080;
+      LogError("Have width 0, will default to %d", _width);
+    }
+    if (_height == 0)
+    {
+      _height = 720;
+      LogError("Have height 0, will default to %d", _height);
+    }
 
-    zero_struct(sub);
+    struct v4l2_event_subscription sub = {0};
+
     sub.type = V4L2_EVENT_SOURCE_CHANGE;
-    ioctl_set(VIDIOC_SUBSCRIBE_EVENT, sub, "subscribe to change events");
+    try {
+    ioctl_rw(VIDIOC_SUBSCRIBE_EVENT, sub, "subscribe to change events");
+    }
+    catch(std::runtime_error e) {
+      LogError("Could not subscribe to source change event (%d), but continuing...", errno);
+    }
 
-    struct v4l2_format format;
-
-    zero_struct(format);
+    struct v4l2_format format = {0};
 
     format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     format.fmt.pix.width = _width;
     format.fmt.pix.height = _height;
-    format.fmt.pix.pixelformat = V4L2_PIX_FMT_JPEG;
-    format.fmt.pix.field = V4L2_FIELD_ANY;
+    format.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+    // format.fmt.pix.field = V4L2_FIELD_ANY;
 
     ioctl_rw(VIDIOC_S_FMT, format, "set video format");
 
@@ -184,9 +220,8 @@ struct Camera_V4L : public Camera
     }
 
 
-    struct v4l2_streamparm fps_config;
+    struct v4l2_streamparm fps_config = {0};
 
-    zero_struct(fps_config);
     fps_config.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
     ioctl_rw(VIDIOC_G_PARM, fps_config, "get FPS settings");
@@ -237,6 +272,8 @@ struct Camera_V4L : public Camera
 
       ioctl_set(VIDIOC_QBUF, buffer_config, "queue buffer");
     }
+
+    enable_streaming(true);
   }
 
   void enable_streaming(bool enable_it = true)
@@ -245,11 +282,11 @@ struct Camera_V4L : public Camera
 
     if (enable_it)
     {
-      ioctl_set(VIDIOC_STREAMON, &type, "enable streaming");
+      ioctl_set(VIDIOC_STREAMON, type, "enable streaming");
     }
     else
     {
-      ioctl_set(VIDIOC_STREAMOFF, &type, "disable streaming");
+      ioctl_set(VIDIOC_STREAMOFF, type, "disable streaming");
     }
   }
 
@@ -258,7 +295,7 @@ struct Camera_V4L : public Camera
 
   virtual void read_image_bytes(std::vector<char> &data) override
   {
-    enable_streaming(true);
+    // enable_streaming(true);
 
     struct v4l2_buffer buffer_config;
 
@@ -267,7 +304,11 @@ struct Camera_V4L : public Camera
     buffer_config.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buffer_config.memory = V4L2_MEMORY_MMAP;
 
+    LogDeb("read_image_bytes: dequeue frame from buffer for fd %d...", _fd);
+
     ioctl_rw(VIDIOC_DQBUF, buffer_config, "dequeue buffer");
+
+    LogDeb("read_image_bytes: got frame of size %d from buffer %d", buffer_config.bytesused, buffer_config.index);
 
     if (buffer_config.bytesused <= HEADERFRAME1)
     {
@@ -287,7 +328,7 @@ struct Camera_V4L : public Camera
     
     ioctl_set(VIDIOC_QBUF, buffer_config, "requeue buffer");
 
-    enable_streaming(false);
+    // enable_streaming(false);
   }
 
   virtual void close() override

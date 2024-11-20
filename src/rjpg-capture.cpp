@@ -55,6 +55,7 @@ void ReportErrorImpl(const std::string &msg)
 
 struct CustomArgs : public argparse::Args {
     std::string &src_path  = kwarg("d,device", "camera device path").set_default("dummy");
+    int &port              = kwarg("p,port", "port to bind to").set_default(8080);
     bool &background       = flag("b,daemon", "background as a daemon");
     bool &dummy_cam        = flag("D,dummy", "use a dummy camera");
     bool &verbose          = flag("v,verbose", "verbose mode");
@@ -64,6 +65,15 @@ struct CustomArgs : public argparse::Args {
 int main(int argc, char* argv[])
 {
   auto args = argparse::parse<CustomArgs>(argc, argv);
+
+  if (args.background)
+  {
+    if (daemon(1, 0) != 0)
+    {
+      LogError("Could not fork to background: %d", errno);
+      return 1;
+    }
+  }
 
   using namespace httplib;
 
@@ -111,14 +121,14 @@ int main(int argc, char* argv[])
 
       res.set_content(&contents.front(), contents.size(), "image/jpeg");
     }
-    catch(std::exception e) {
+    catch(std::exception &e) {
       LogError("could not read image data: %s\n", e.what());
       throw e;
     }
   });
 
 
-  svr.listen("0.0.0.0", 12345);
+  svr.listen("0.0.0.0", args.port);
 
   return 0;
 }
