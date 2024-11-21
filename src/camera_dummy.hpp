@@ -36,17 +36,25 @@ struct CameraDummy : public Camera
     std::fclose(fp);
   }
 
-  virtual void open(const std::string &path) override
+  virtual void open(const std::string &path, int width, int height) override
   {
 
   }
 
-  virtual void read_image_bytes(std::vector<char> &contents) override
+  virtual void image_reader_loop() override
+  {
+  }
+
+  virtual ImageData_h capture_frame() override
   {
     try {
       auto filename = string_format("test-images/test-image-%d.jpg", image_count++ % 10);
 
-      slurp_file(filename.c_str(), contents);
+      ImageData_h contents = std::make_shared<ImageData>();
+
+      slurp_file(filename.c_str(), *contents);
+
+      return contents;
     }
     catch(file_read_exception e) {
       fprintf(stderr, "could not read file: %s\n", e.what());

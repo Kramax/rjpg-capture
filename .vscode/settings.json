@@ -69,6 +69,8 @@
     "format": "cpp",
     "span": "cpp",
     "variant": "cpp",
-    "codecvt": "cpp"
-  }
+    "codecvt": "cpp",
+    "chrono": "cpp"
+  },
+  "C_Cpp.default.compilerPath": "/usr/bin/clang++"
 }

@@ -7,6 +7,8 @@
 #include <stdarg.h>  // For va_start, etc.
 #include <memory>    // For std::unique_ptr
 
+extern bool verbose_debug;
+
 inline std::string string_format(const std::string fmt_str, ...) 
 {
     int final_n, n = ((int)fmt_str.size()) * 2; /* Reserve two times as much as the length of the fmt_str */
@@ -28,7 +30,7 @@ inline std::string string_format(const std::string fmt_str, ...)
 
 #ifdef HAS_SOURCE_LOCATION // sadly rpi debian is not up to date and is missing this
 #define ReportError(fmt, ...) ReportErrorImpl(std::source_location::current(), string_format(fmt, __VA_ARGS__))
-#define LogDeb(fmt, ...) LogDebImp(std::source_location::current(), string_format(fmt, __VA_ARGS__))
+#define LogDeb(fmt, ...) if (verbose_debug) LogDebImp(std::source_location::current(), string_format(fmt, __VA_ARGS__))
 #define LogError(fmt, ...) LogErrorImpl(std::source_location::current(), string_format(fmt, __VA_ARGS__))
 
 void ReportErrorImpl(const std::source_location location, const std::string &msg);
@@ -36,7 +38,7 @@ void LogErrorImpl(const std::source_location location, const std::string &msg);
 void LogDebImp(const std::source_location location, const std::string &msg);
 #else
 #define ReportError(fmt, ...) ReportErrorImpl(string_format(fmt, __VA_ARGS__))
-#define LogDeb(fmt, ...) LogDebImp(string_format(fmt, __VA_ARGS__))
+#define LogDeb(fmt, ...) if (verbose_debug) LogDebImp(string_format(fmt, __VA_ARGS__))
 #define LogError(fmt, ...) LogErrorImpl(string_format(fmt, __VA_ARGS__))
 
 void ReportErrorImpl(const std::string &msg);

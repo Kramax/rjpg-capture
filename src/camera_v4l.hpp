@@ -26,6 +26,8 @@
 #include "camera.hpp"
 #include "rjpg-capture.hpp"
 
+#include <thread>
+
 extern "C" {
   #include <sys/types.h>
   #include <sys/stat.h>
@@ -55,27 +57,38 @@ struct Camera_V4L : public Camera
   int _fd = -1; 
   unsigned int _width = 0;
   unsigned int _height = 0;
-  static constexpr int _bufferCount = 4;
+  static constexpr int _bufferCount = 2;
   CaptureBuffer _captureBuffers[_bufferCount];
+  std::mutex _mutex;
+  std::mutex _aliveMutex;
+  ImageData_h _frameBuffers[2];
+  int _activeFrame = 0;
+  bool _alive = true;
+
+  virtual ~Camera_V4L()
+  {
+    std::lock_guard<std::mutex> lock(_aliveMutex);
+    _alive = false;    
+  }
 
   /* ioctl with a number of retries in the case of failure
   * args:
   * fd - device descriptor
-  * IOCTL_X - ioctl reference
+  * code - ioctl reference
   * arg - pointer to ioctl data
   * returns - ioctl result
   */
-  int xioctl(int fd, unsigned long IOCTL_X, void *arg)
+  int xioctl(int fd, unsigned long code, void *arg)
   {
       int ret = 0;
       int tries = 4;
 
       do {
-          ret = ioctl(fd, IOCTL_X, arg);
+          ret = ioctl(fd, code, arg);
       } while(ret && tries-- &&
               ((errno == EINTR) || (errno == EAGAIN) || (errno == ETIMEDOUT)));
 
-      if(ret && (tries <= 0)) fprintf(stderr, "ioctl (%i) retried - giving up: %s)\n", IOCTL_X, strerror(errno));
+      if(ret && (tries <= 0)) fprintf(stderr, "ioctl (%lu) retried - giving up: %s)\n", code, strerror(errno));
 
       return (ret);
   }
@@ -113,8 +126,94 @@ struct Camera_V4L : public Camera
     }
   }
 
+  std::map<std::string,int32_t> control_ids = {
+    { "auto_wb", V4L2_CID_AUTO_WHITE_BALANCE },
+  };
 
-  virtual void open(const std::string &path) override 
+  std::map<std::string,int32_t> ext_control_ids = {
+    { "exposure_abs", V4L2_CID_EXPOSURE_ABSOLUTE },
+    { "exposure_mode", V4L2_CID_EXPOSURE_AUTO }
+  };
+
+  std::map<std::string,int32_t> control_value_enums = {
+    { "exposure_auto", V4L2_EXPOSURE_AUTO },
+    { "exposure_manual", V4L2_EXPOSURE_MANUAL	},
+    { "exposure_shutter_priority", V4L2_EXPOSURE_SHUTTER_PRIORITY	},
+    { "exposure_aperature_priority", V4L2_EXPOSURE_APERTURE_PRIORITY },
+  };
+
+  void set_control(uint32_t control_id, int32_t value)
+  {
+    v4l2_control ctrl = {0};
+
+    ctrl.id = control_id;
+    ctrl.value = value;
+
+    ioctl_set(VIDIOC_S_CTRL, ctrl, "set control value");
+  }
+
+  void set_extended_control(uint32_t control_id, int32_t value)
+  {
+    v4l2_ext_controls ext_ctrls = {0};
+    v4l2_ext_control ext_ctrl = {0};
+
+    ext_ctrl.id = control_id;
+    ext_ctrl.value = value;
+    ext_ctrls.count = 1;
+    ext_ctrls.controls = &ext_ctrl;
+
+    ioctl_set(VIDIOC_S_EXT_CTRLS, ext_ctrls, "set extended control value");
+  }
+
+  virtual bool set_control(const std::string &control_name, int32_t value) override
+  {
+    auto it = control_ids.find(control_name);
+
+    if (it == control_ids.end())
+    {
+      auto jit = ext_control_ids.find(control_name);
+
+      if (jit == ext_control_ids.end())
+      {
+        LogError("set_control: control %s is not available", control_name.c_str());
+        return false;
+      }
+
+      try {
+        set_extended_control(jit->second, value);
+        return true;
+      }
+      catch(std::runtime_error &e) {
+        LogError("set_control: extended control %s cannot be set", control_name.c_str());
+        return false;
+      }
+    }
+
+    try {
+      set_control(it->second, value);
+      return true;
+    }
+    catch(std::runtime_error &e) {
+      LogError("set_control: control %s cannot be set", control_name.c_str());
+      return false;
+    }
+  }
+
+  virtual bool set_control(const std::string &control_name, const std::string &enum_value) override
+  {
+    auto it = control_value_enums.find(enum_value);
+
+    if (it == control_value_enums.end())
+    {
+      LogError("set_control: control enum value %s is not available for control %s", 
+        enum_value.c_str(), control_name.c_str());
+      return false;
+    }
+
+    return set_control(control_name, it->second);
+  }
+
+  virtual void open(const std::string &path, int width, int height) override 
   {
     if (_fd != -1)
     {
@@ -177,19 +276,8 @@ struct Camera_V4L : public Camera
     
     LogDeb("Got timing size %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
 
-    _width = timings.bt.width;
-    _height = timings.bt.height;
-
-    if (_width == 0)
-    {
-      _width = 1080;
-      LogError("Have width 0, will default to %d", _width);
-    }
-    if (_height == 0)
-    {
-      _height = 720;
-      LogError("Have height 0, will default to %d", _height);
-    }
+    _width = width;
+    _height = height;
 
     struct v4l2_event_subscription sub = {0};
 
@@ -204,10 +292,33 @@ struct Camera_V4L : public Camera
     struct v4l2_format format = {0};
 
     format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    ioctl_rw(VIDIOC_G_FMT, format, "get current video format");
+
+    if (format.type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+    {
+      LogError("query video format gave bad type %d", format.type);
+    }
+    else
+    {
+      LogDeb("current format: width = %u", format.fmt.pix.width);
+      LogDeb("current format: height = %u", format.fmt.pix.height);
+      LogDeb("current format: field = %u", format.fmt.pix.field);
+      LogDeb("current format: pixelformat = %u", format.fmt.pix.pixelformat);
+      LogDeb("current format: bytesperline = %u", format.fmt.pix.bytesperline);
+      LogDeb("current format: sizeimage = %u", format.fmt.pix.sizeimage);
+      LogDeb("current format: priv = %u", format.fmt.pix.priv);
+      LogDeb("current format: flags = %u", format.fmt.pix.flags);
+      LogDeb("current format: ycbcr_enc = %u", format.fmt.pix.ycbcr_enc);
+      LogDeb("current format: hsv_enc = %u", format.fmt.pix.hsv_enc);
+      LogDeb("current format: quantization = %u", format.fmt.pix.quantization);
+      LogDeb("current format: xfer_func = %u", format.fmt.pix.xfer_func);      
+    }
+
     format.fmt.pix.width = _width;
     format.fmt.pix.height = _height;
     format.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
-    // format.fmt.pix.field = V4L2_FIELD_ANY;
+    format.fmt.pix.field = V4L2_FIELD_ANY;
 
     ioctl_rw(VIDIOC_S_FMT, format, "set video format");
 
@@ -293,7 +404,7 @@ struct Camera_V4L : public Camera
 // for detecting bogus JPEG frames
 #define HEADERFRAME1 0xaf
 
-  virtual void read_image_bytes(std::vector<char> &data) override
+  virtual void read_image_bytes(ImageData_h &data)
   {
     // enable_streaming(true);
 
@@ -304,7 +415,7 @@ struct Camera_V4L : public Camera
     buffer_config.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buffer_config.memory = V4L2_MEMORY_MMAP;
 
-    LogDeb("read_image_bytes: dequeue frame from buffer for fd %d...", _fd);
+    LogDeb("read_image_bytes: dequeue frame from buffer %d...", buffer_config.index);
 
     ioctl_rw(VIDIOC_DQBUF, buffer_config, "dequeue buffer");
 
@@ -313,7 +424,7 @@ struct Camera_V4L : public Camera
     if (buffer_config.bytesused <= HEADERFRAME1)
     {
       LogDeb("ignoring empty-ish buffer of size %d", (int)buffer_config.bytesused);
-      data.clear();
+      data->clear();
       return;
     }
 
@@ -323,12 +434,50 @@ struct Camera_V4L : public Camera
       throw ErrorCapture("invalid buffer index");
     }
 
-    data.resize(buffer_config.bytesused);
-    memcpy(&data.front(), _captureBuffers[buffer_config.index].start, buffer_config.bytesused);
-    
+    data->resize(buffer_config.bytesused);
+    memcpy(&data->front(), _captureBuffers[buffer_config.index].start, buffer_config.bytesused);
+
     ioctl_set(VIDIOC_QBUF, buffer_config, "requeue buffer");
 
     // enable_streaming(false);
+  }
+
+  virtual ImageData_h capture_frame() override
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _frameBuffers[_activeFrame];
+  }
+
+  virtual void publish_frame(ImageData_h data)
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _activeFrame = !_activeFrame;
+    _frameBuffers[_activeFrame] = data;
+  }
+
+  virtual void image_reader_loop() override
+  {
+    for( ; ; )
+    {
+      try {
+        std::lock_guard<std::mutex> lock(_aliveMutex);
+
+        if (!_alive)
+          return;
+
+        ImageData_h data = std::make_shared<ImageData>();
+        read_image_bytes(data);
+
+        if (data->empty())
+          continue;
+
+        publish_frame(data);
+      }
+      catch(std::runtime_error &e)
+      {
+        LogError("image_reader_loop: error grabbing frame for fd %d, continuing", _fd);
+      }
+    }
   }
 
   virtual void close() override
@@ -355,6 +504,9 @@ struct Camera_V4L : public Camera
       ::close(_fd);
       _fd = -1;
     }
+
+    std::lock_guard<std::mutex> lock(_aliveMutex);
+    _alive = false;    
   }
 
 

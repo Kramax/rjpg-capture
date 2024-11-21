@@ -7,12 +7,16 @@
 #include <source_location>
 #include <stdio.h>
 #include <memory>
+#include <chrono>
+#include <iostream>
 
 #include "httpd.hpp"
 #include "rjpg-capture.hpp"
 #include "camera_dummy.hpp"
 #include "camera_v4l.hpp"
 #include "argparse.hpp"
+
+bool verbose_debug = false;
 
 #ifdef HAS_SOURCE_LOCATION // sadly rpi debian is not up to date and is missing this
 void LogErrorImpl(const std::source_location location, const std::string &msg)
@@ -35,7 +39,11 @@ void ReportErrorImpl(const std::source_location location, const std::string &msg
 #else
 void LogErrorImpl(const std::string &msg)
 {
-  fprintf(stderr, "%s", msg.c_str());
+  auto d = std::chrono::system_clock::now().time_since_epoch();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(d);
+  std::cerr << duration;
+
+  fprintf(stderr, ": %s", msg.c_str());
 
   if (msg.back() != '\n')
     fputc('\n', stderr);
@@ -56,6 +64,9 @@ void ReportErrorImpl(const std::string &msg)
 struct CustomArgs : public argparse::Args {
     std::string &src_path  = kwarg("d,device", "camera device path").set_default("dummy");
     int &port              = kwarg("p,port", "port to bind to").set_default(8080);
+    int &width             = kwarg("w,width", "desired frame width").set_default(1280);
+    int &height            = kwarg("h,height", "desired frame height").set_default(720);
+    int &exposure          = kwarg("e,exposure", "exposure integer").set_default(0);
     bool &background       = flag("b,daemon", "background as a daemon");
     bool &dummy_cam        = flag("D,dummy", "use a dummy camera");
     bool &verbose          = flag("v,verbose", "verbose mode");
@@ -65,6 +76,8 @@ struct CustomArgs : public argparse::Args {
 int main(int argc, char* argv[])
 {
   auto args = argparse::parse<CustomArgs>(argc, argv);
+
+  verbose_debug = args.verbose;
 
   if (args.background)
   {
@@ -95,7 +108,7 @@ int main(int argc, char* argv[])
 
   try
   {
-    camera->open(args.src_path);
+    camera->open(args.src_path, args.width, args.height);
   }
   catch(const std::exception& e)
   {
@@ -103,7 +116,15 @@ int main(int argc, char* argv[])
     return 1;
   }
   
+  if (args.exposure > 0)
+  {
+    camera->set_control("exposure_mode", "exposure_manual");
+    camera->set_control("exposure_abs", args.exposure);
+  }
+
   httplib::Server svr;
+
+  camera->run_reader();
 
   svr.Get("/capture-image", [&camera](const Request& req, Response& res) {
     if (req.has_header("Content-Length")) {
@@ -115,11 +136,14 @@ int main(int argc, char* argv[])
 
 
     try {
-      std::vector<char> contents;
+      Camera::ImageData_h data = camera->capture_frame();
 
-      camera->read_image_bytes(contents);
+      if (data->empty())
+      {
+        throw std::runtime_error("no frame data");
+      }
 
-      res.set_content(&contents.front(), contents.size(), "image/jpeg");
+      res.set_content(&data->front(), data->size(), "image/jpeg");
     }
     catch(std::exception &e) {
       LogError("could not read image data: %s\n", e.what());
@@ -130,5 +154,7 @@ int main(int argc, char* argv[])
 
   svr.listen("0.0.0.0", args.port);
 
+  camera->close();
+  
   return 0;
 }
